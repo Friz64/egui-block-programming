@@ -1,13 +1,15 @@
 use eframe::{
     egui::{DragValue, Layout, Response, Sense, TextEdit, Ui, Widget},
-    epaint::{Color32, Mesh, Pos2, Rect, Shape, Stroke, Vec2, Vertex, WHITE_UV},
+    epaint::{Color32, Mesh, Pos2, Rect, Shape, Vec2, Vertex, WHITE_UV},
 };
 use itertools::Itertools;
 use std::{cmp::Ordering, collections::HashMap, iter, num::NonZeroUsize};
 use thunderdome::{Arena, Index};
 
-const BLOCK_MARGIN: f32 = 10.0;
-const BLOCK_HEIGHT: f32 = 40.0;
+const PART_PADDING: f32 = 10.0;
+const PART_HEIGHT_MIN: f32 = 40.0;
+const MULTIPART_INDENT: f32 = 15.0;
+const EMPTY_BRANCH_HEIGHT: f32 = 20.0;
 const NOTCH_TL: Vec2 = Vec2::new(10.0, 0.0);
 const NOTCH_BL: Vec2 = Vec2::new(20.0, 10.0);
 const NOTCH_BR: Vec2 = Vec2::new(30.0, 10.0);
@@ -69,7 +71,8 @@ impl BlockShape {
 #[derive(Clone)]
 pub struct BlockDescription {
     pub shape: BlockShape,
-    pub content: Vec<BlockWidget>,
+    /// parts -> widgets
+    pub content: Vec<Vec<BlockWidget>>,
 }
 
 pub trait Block {
@@ -78,34 +81,72 @@ pub trait Block {
     fn run(&mut self);
 }
 
+enum Next {
+    NotApplicable,
+    None,
+    Some { index: Index, height: f32 },
+}
+
+struct BlockPart {
+    top_offset: Vec2,
+    bottom_offset: Vec2,
+    width: f32,
+    next: Next,
+}
+
+impl BlockPart {
+    fn height(&self) -> f32 {
+        self.bottom_offset.y - self.top_offset.y
+    }
+
+    fn extent(&self) -> Vec2 {
+        Vec2 {
+            x: self.width,
+            y: self.height(),
+        }
+    }
+}
+
 struct BlockInstance {
-    // TODO: why this is relative to the window?
     position: Pos2,
     last_touched_frame: u64,
     snap_target: Option<Index>,
-    nexts: Vec<Option<Index>>,
-    extent: Vec2,
-    implementation: Box<dyn Block>,
+    parts: Vec<BlockPart>,
+    _implementation: Box<dyn Block>,
     description: BlockDescription,
     text_data: HashMap<&'static str, String>,
     number_data: HashMap<&'static str, i32>,
 }
 
 impl BlockInstance {
-    fn next(&self, index: usize) -> Option<Index> {
-        self.nexts.get(index).and_then(|next| *next)
+    fn total_height(&self) -> f32 {
+        self.parts.last().unwrap().bottom_offset.y
     }
 
-    fn paint(&mut self, ui: &mut Ui, fill_color: Color32, outline_stroke: Stroke) {
-        let paint_position = ui.max_rect().min;
+    fn paint(&mut self, mut uis: Vec<Ui>, response: &Response) {
+        let widget_visuals = uis[0].style().interact(response);
+        let fill_color = if uis[0].visuals().dark_mode {
+            FILL_COLOR_DARK
+        } else {
+            FILL_COLOR_LIGHT
+        };
 
-        let main_tl = Pos2::new(paint_position.x, paint_position.y);
-        let main_tr = Pos2::new(paint_position.x + self.extent.x, paint_position.y);
-        let main_br = Pos2::new(
-            paint_position.x + self.extent.x,
-            paint_position.y + self.extent.y,
-        );
-        let main_bl = Pos2::new(paint_position.x, paint_position.y + self.extent.y);
+        let mut vertices = Vec::with_capacity(12 * self.parts.len());
+        let mut vertex = |pos: Pos2| {
+            let index = vertices.len();
+            vertices.push(Vertex {
+                pos,
+                uv: WHITE_UV,
+                color: fill_color,
+            });
+
+            index as u32
+        };
+
+        let mut indices = Vec::with_capacity(6 * 5 * self.parts.len());
+        let mut quad = |tl: u32, tr: u32, br: u32, bl: u32| {
+            indices.extend_from_slice(&[tl, tr, bl, bl, br, tr]);
+        };
 
         let mut top_notch_multiplier = Vec2::splat(1.0);
         let mut bottom_notch_multiplier = Vec2::splat(1.0);
@@ -118,23 +159,8 @@ impl BlockInstance {
             bottom_notch_multiplier.y = 0.0;
         }
 
-        let mut vertices = Vec::with_capacity(12);
-        let mut vertex = |pos: Pos2| {
-            let index = vertices.len();
-            vertices.push(Vertex {
-                pos,
-                uv: WHITE_UV,
-                color: fill_color,
-            });
-
-            index as u32
-        };
-
-        let mut indices = Vec::with_capacity(6 * 5);
-        let mut quad = |tl: u32, tr: u32, br: u32, bl: u32| {
-            indices.extend_from_slice(&[tl, tr, bl, bl, br, tr]);
-        };
-
+        let mut side_top = None;
+        let mut side_bottom = None;
         let mut block_part = |tl: Pos2, tr: Pos2, bl: Pos2, br: Pos2| {
             let index_tl = vertex(tl);
             vertex(tl + NOTCH_TL * top_notch_multiplier);
@@ -149,6 +175,11 @@ impl BlockInstance {
             vertex(bl + NOTCH_TL * bottom_notch_multiplier);
             let index_bl = vertex(bl);
 
+            side_bottom = Some((index_bl, index_tl));
+            if side_top.is_none() {
+                side_top = Some((index_tl, index_bl));
+            }
+
             for i in 0..5 {
                 quad(
                     index_tl + i,
@@ -159,57 +190,64 @@ impl BlockInstance {
             }
         };
 
-        block_part(main_tl, main_tr, main_bl, main_br);
-        /*
-        for branch in 0..self.description.shape.branches() {
-            let offset = Vec2::new(0.0, (branch + 1) as f32 * 20.0);
+        let paint_position = uis[0].max_rect().min;
+        for part in &self.parts {
             block_part(
-                main_tl + offset,
-                main_tr + offset,
-                main_bl + offset,
-                main_br + offset,
+                paint_position + part.top_offset,
+                paint_position + part.top_offset + Vec2::new(part.width, 0.0),
+                paint_position + part.bottom_offset,
+                paint_position + part.top_offset + Vec2::new(part.width, part.height()),
             );
         }
-        */
+
+        if self.parts.len() > 1 {
+            let (tl, tr) = side_top.unwrap();
+            let (bl, br) = side_bottom.unwrap();
+            quad(tl, tr, br, bl);
+        }
 
         let shape = Shape::line(
             (0..vertices.len())
                 .chain(iter::once(0))
                 .map(|i| vertices[i].pos)
                 .collect(),
-            outline_stroke,
+            widget_visuals.fg_stroke,
         );
 
-        ui.painter().add(Mesh {
+        uis[0].painter().add(Mesh {
             vertices,
             indices,
             ..Default::default()
         });
-        ui.painter().add(shape);
+        uis[0].painter().add(shape);
 
-        let inner = ui
-            .horizontal_centered(|ui| {
-                ui.add_space(BLOCK_MARGIN);
+        for (i, (part, ui)) in self.parts.iter_mut().zip(uis.iter_mut()).enumerate() {
+            let content = ui
+                .horizontal_centered(|ui| {
+                    ui.add_space(PART_PADDING);
 
-                for widget in &self.description.content {
-                    let _response = match widget {
-                        BlockWidget::Label { text } => ui.label(*text),
-                        BlockWidget::TextEdit { key, default: _ } => ui.add(
-                            TextEdit::singleline(self.text_data.get_mut(key).unwrap())
-                                .desired_width(24.0)
-                                .clip_text(false),
-                        ),
-                        BlockWidget::NumberEdit { key, default: _ } => {
-                            ui.add(DragValue::new(self.number_data.get_mut(key).unwrap()))
-                        }
-                    };
-                }
+                    for widget in &self.description.content[i] {
+                        let _response = match widget {
+                            BlockWidget::Label { text } => ui.label(*text),
+                            BlockWidget::TextEdit { key, default: _ } => ui.add(
+                                TextEdit::singleline(self.text_data.get_mut(key).unwrap())
+                                    .desired_width(24.0)
+                                    .clip_text(false),
+                            ),
+                            BlockWidget::NumberEdit { key, default: _ } => {
+                                ui.add(DragValue::new(self.number_data.get_mut(key).unwrap()))
+                            }
+                        };
+                    }
 
-                ui.add_space(BLOCK_MARGIN);
-            })
-            .response;
+                    ui.add_space(PART_PADDING);
+                })
+                .response;
 
-        self.extent = inner.rect.size();
+            let size = content.rect.size();
+            part.width = size.x;
+            part.bottom_offset.y = part.top_offset.y + size.y;
+        }
     }
 }
 
@@ -230,33 +268,50 @@ impl Default for BlockEditor {
 impl BlockEditor {
     pub fn add_block<B: Block + 'static>(&mut self, position: Pos2, mut block: B) {
         let description = block.describe();
+        assert_eq!(
+            description.content.len(),
+            description.shape.branches() + 1,
+            "number of parts does not match number of branches"
+        );
+
         let mut text_data = HashMap::new();
         let mut number_data = HashMap::new();
-
-        for widget in &description.content {
-            match widget {
-                BlockWidget::TextEdit { key, default } => {
-                    text_data.insert(*key, String::from(*default));
+        for part in &description.content {
+            for widget in part {
+                match widget {
+                    BlockWidget::TextEdit { key, default } => {
+                        text_data.insert(*key, String::from(*default));
+                    }
+                    BlockWidget::NumberEdit { key, default } => {
+                        number_data.insert(*key, *default);
+                    }
+                    _ => (),
                 }
-                BlockWidget::NumberEdit { key, default } => {
-                    number_data.insert(*key, *default);
-                }
-                _ => (),
             }
         }
+
+        let parts = description
+            .content
+            .iter()
+            .enumerate()
+            .map(|(i, _part)| BlockPart {
+                top_offset: Vec2::ZERO,
+                bottom_offset: Vec2::new(0.0, PART_HEIGHT_MIN),
+                width: 0.0,
+                next: if description.shape.bottom_notch() || i < description.content.len() - 1 {
+                    Next::None
+                } else {
+                    Next::NotApplicable
+                },
+            })
+            .collect();
 
         self.blocks.insert(BlockInstance {
             position,
             last_touched_frame: 0,
             snap_target: None,
-            nexts: match description.shape {
-                BlockShape::Hat => vec![None],
-                BlockShape::Stack => vec![None],
-                BlockShape::C { branches } => vec![None; 1 + branches.get()],
-                BlockShape::Cap => vec![],
-            },
-            extent: Vec2::new(0.0, BLOCK_HEIGHT),
-            implementation: Box::new(block),
+            parts,
+            _implementation: Box::new(block),
             description,
             text_data,
             number_data,
@@ -296,7 +351,7 @@ impl Widget for &mut BlockEditor {
 
         struct SetNext {
             upper_block: Index,
-            upper_next_index: usize,
+            upper_part: usize,
             next_block: Index,
         }
 
@@ -307,60 +362,89 @@ impl Widget for &mut BlockEditor {
             .iter_mut()
             .sorted_unstable_by_key(|(_index, block)| block.last_touched_frame)
         {
-            let child_ui_rect = Rect::from_min_size(
-                ui.max_rect().min + self.offset + block.position.to_vec2(),
-                block.extent,
-            );
+            let sense = Sense::drag();
+            let part_count = block.parts.len();
+            let mut uis = Vec::with_capacity(block.parts.len());
+            let mut y_offset = 0.0;
+            let mut responses_union: Option<Response> = None;
+            for (i, part) in block.parts.iter_mut().enumerate() {
+                let part_height = part.height();
 
-            let child_ui = ui.child_ui(child_ui_rect, Layout::default());
-            {
-                let mut ui = child_ui;
-                ui.set_clip_rect(if block.extent.x == 0.0 {
+                let last = part_count - 1;
+                part.top_offset = Vec2::new(if i != 0 { MULTIPART_INDENT } else { 0.0 }, y_offset);
+                part.bottom_offset = Vec2::new(
+                    if i != last { MULTIPART_INDENT } else { 0.0 },
+                    y_offset + part_height,
+                );
+
+                let child_ui_rect = Rect::from_min_size(
+                    ui.max_rect().min + self.offset + block.position.to_vec2() + part.top_offset,
+                    part.extent(),
+                );
+
+                let mut ui = ui.child_ui(child_ui_rect, Layout::default());
+                ui.set_clip_rect(if part.width == 0.0 {
                     Rect::NOTHING
                 } else {
                     editor_rect
                 });
 
-                let response = ui.interact(child_ui_rect, ui.id().with(index), Sense::drag());
-
-                if response.dragged() {
-                    block.position += response.drag_delta();
-                    // TODO: propagate this through the linked list
-                    block.last_touched_frame = ui.ctx().frame_nr();
-                    dragging = Some(index);
-                }
-
-                if response.drag_released() {
-                    if let Some(upper_block) = block.snap_target {
-                        block.snap_target = None;
-                        set_next = Some(SetNext {
-                            upper_block,
-                            upper_next_index: 0,
-                            next_block: index,
-                        });
-                    }
-                }
-
-                let fill_color = if ui.visuals().dark_mode {
-                    FILL_COLOR_DARK
+                let response = ui.interact(child_ui_rect, ui.id().with(index).with(i), sense);
+                responses_union = Some(if let Some(other_responses) = responses_union {
+                    other_responses.union(response)
                 } else {
-                    FILL_COLOR_LIGHT
-                };
+                    response
+                });
 
-                let outline_stroke = ui.style().interact(&response).fg_stroke;
-                block.paint(&mut ui, fill_color, outline_stroke);
+                y_offset += part.height();
+                if let Next::Some { height, .. } = part.next {
+                    y_offset += height;
+                } else {
+                    y_offset += EMPTY_BRANCH_HEIGHT;
+                }
 
-                // ui.label(format!("snap target: {:?}", block.snap_target.is_some()));
-                // ui.label(format!("next: {:?}", block.next.is_some()));
+                uis.push(ui);
             }
+
+            let mut response = responses_union.unwrap();
+            if part_count > 1 {
+                response = response.union(ui.interact(
+                    Rect {
+                        min: uis.first().unwrap().max_rect().left_bottom(),
+                        max: uis.last().unwrap().max_rect().left_bottom(),
+                    },
+                    ui.id().with(index).with("side"),
+                    sense,
+                ));
+            }
+
+            if response.dragged() {
+                block.position += response.drag_delta();
+                // TODO: propagate this through the linked list
+                block.last_touched_frame = ui.ctx().frame_nr();
+                dragging = Some(index);
+            }
+
+            if response.drag_released() {
+                if let Some(upper_block) = block.snap_target {
+                    block.snap_target = None;
+                    set_next = Some(SetNext {
+                        upper_block,
+                        upper_part: 0,
+                        next_block: index,
+                    });
+                }
+            }
+
+            block.paint(uis, &response);
         }
 
         if let Some(dragging) = dragging {
             // if this block is the next of anything, clear it
             for (_index, block) in &mut self.blocks {
-                for next in &mut block.nexts {
-                    if *next == Some(dragging) {
-                        *next = None;
+                for part in &mut block.parts {
+                    if matches!(part.next, Next::Some { index, .. } if index == dragging) {
+                        part.next = Next::None;
                     }
                 }
             }
@@ -378,10 +462,10 @@ impl Widget for &mut BlockEditor {
                 .blocks
                 .iter()
                 .filter(|(index, _block)| *index != dragging)
-                .filter(|(_index, block)| !block.nexts.is_empty())
                 .map(|(index, other_block)| {
-                    let other_attachment_position =
-                        other_block.position + Vec2::new(0.0, other_block.extent.y) + notch_offset;
+                    let other_attachment_position = other_block.position
+                        + other_block.parts.last().unwrap().bottom_offset
+                        + notch_offset;
 
                     let dist = dragging_attachment_position.distance(other_attachment_position);
                     (index, dist)
@@ -395,13 +479,16 @@ impl Widget for &mut BlockEditor {
 
         if let Some(SetNext {
             upper_block,
-            upper_next_index,
+            upper_part,
             next_block,
         }) = set_next
         {
-            let upper_next = &mut self.blocks[upper_block].nexts[upper_next_index];
-            if upper_next.is_none() {
-                *upper_next = Some(next_block);
+            let upper_next = &mut self.blocks[upper_block].parts[upper_part].next;
+            if matches!(upper_next, Next::None) {
+                *upper_next = Next::Some {
+                    index: next_block,
+                    height: 0.0,
+                };
             }
         }
 
@@ -410,12 +497,15 @@ impl Widget for &mut BlockEditor {
         let child_update: Vec<_> = self
             .blocks
             .iter()
-            .filter_map(|(index, block)| block.next(0).map(|next| (index, next)))
+            .filter_map(|(index, block)| match block.parts[0].next {
+                Next::Some { index: next, .. } => Some((index, next)),
+                _ => None,
+            })
             .collect();
 
         for (upper, next) in child_update {
-            self.blocks[next].position =
-                self.blocks[upper].position + Vec2::new(0.0, self.blocks[upper].extent.y);
+            self.blocks[next].position = self.blocks[upper].position
+                + self.blocks[upper].parts.last().unwrap().bottom_offset;
         }
 
         response

@@ -23,28 +23,8 @@ struct Main {
 impl Default for Main {
     fn default() -> Self {
         let mut block_editor = BlockEditor::default();
-        block_editor.add_block(
-            Pos2::new(50.0, 50.0),
-            TestingBlock {
-                shape: BlockShape::C {
-                    branches: NonZeroUsize::new(1).unwrap(),
-                },
-            },
-        );
-
-        block_editor.add_block(
-            Pos2::new(150.0, 150.0),
-            TestingBlock {
-                shape: BlockShape::Cap,
-            },
-        );
-
-        block_editor.add_block(
-            Pos2::new(100.0, 100.0),
-            TestingBlock {
-                shape: BlockShape::Hat,
-            },
-        );
+        block_editor.add_block(Pos2::new(50.0, 50.0), TestingBlock {});
+        block_editor.add_block(Pos2::new(100.0, 100.0), IfBlock {});
 
         Self { block_editor }
     }
@@ -57,12 +37,8 @@ impl eframe::App for Main {
             egui::widgets::global_dark_light_mode_buttons(ui);
 
             if ui.button("stack").clicked() {
-                self.block_editor.add_block(
-                    Pos2::new(150.0, 150.0),
-                    TestingBlock {
-                        shape: BlockShape::Cap,
-                    },
-                );
+                self.block_editor
+                    .add_block(Pos2::new(150.0, 150.0), TestingBlock {});
             }
 
             ui.add(&mut self.block_editor);
@@ -70,9 +46,7 @@ impl eframe::App for Main {
     }
 }
 
-struct TestingBlock {
-    shape: BlockShape,
-}
+struct TestingBlock {}
 
 impl TestingBlock {
     const STEPS: &'static str = "steps";
@@ -82,8 +56,8 @@ impl TestingBlock {
 impl Block for TestingBlock {
     fn describe(&mut self) -> BlockDescription {
         BlockDescription {
-            shape: self.shape,
-            content: vec![
+            shape: BlockShape::Stack,
+            content: vec![vec![
                 BlockWidget::Label { text: "move" },
                 BlockWidget::NumberEdit {
                     key: Self::STEPS,
@@ -95,6 +69,74 @@ impl Block for TestingBlock {
                     default: ":3",
                 },
                 BlockWidget::Label { text: "abc" },
+            ]],
+        }
+    }
+
+    fn run(&mut self) {}
+}
+
+struct IfBlock {}
+
+impl Block for IfBlock {
+    fn describe(&mut self) -> BlockDescription {
+        BlockDescription {
+            shape: BlockShape::C {
+                branches: NonZeroUsize::new(3).unwrap(),
+            },
+            content: vec![
+                vec![
+                    BlockWidget::Label { text: "move" },
+                    BlockWidget::NumberEdit {
+                        key: "steps0",
+                        default: 0,
+                    },
+                    BlockWidget::Label { text: "steps" },
+                    BlockWidget::TextEdit {
+                        key: "testing0",
+                        default: ":3",
+                    },
+                    BlockWidget::Label { text: "abc" },
+                ],
+                vec![
+                    BlockWidget::Label { text: "move" },
+                    BlockWidget::NumberEdit {
+                        key: "steps1",
+                        default: 0,
+                    },
+                    BlockWidget::Label { text: "steps" },
+                    BlockWidget::TextEdit {
+                        key: "testing1",
+                        default: ":3",
+                    },
+                    BlockWidget::Label { text: "abc" },
+                ],
+                vec![
+                    BlockWidget::Label { text: "move" },
+                    BlockWidget::NumberEdit {
+                        key: "steps2",
+                        default: 0,
+                    },
+                    BlockWidget::Label { text: "steps" },
+                    BlockWidget::TextEdit {
+                        key: "testing2",
+                        default: ":3",
+                    },
+                    BlockWidget::Label { text: "abc" },
+                ],
+                vec![
+                    BlockWidget::Label { text: "move" },
+                    BlockWidget::NumberEdit {
+                        key: "steps3",
+                        default: 0,
+                    },
+                    BlockWidget::Label { text: "steps" },
+                    BlockWidget::TextEdit {
+                        key: "testing3",
+                        default: ":3",
+                    },
+                    BlockWidget::Label { text: "abc" },
+                ],
             ],
         }
     }
