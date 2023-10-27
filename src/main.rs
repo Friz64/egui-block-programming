@@ -1,7 +1,8 @@
 mod block;
 
-use block::{Block, BlockDescription, BlockEditor, BlockShape};
+use block::{Block, BlockDescription, BlockEditor, BlockShape, BlockWidget};
 use eframe::{egui, epaint::Pos2};
+use std::num::NonZeroUsize;
 
 fn main() -> Result<(), eframe::Error> {
     std::env::set_var("WINIT_UNIX_BACKEND", "x11");
@@ -22,8 +23,28 @@ struct Main {
 impl Default for Main {
     fn default() -> Self {
         let mut block_editor = BlockEditor::default();
-        block_editor.add_block(Pos2::new(50.0, 50.0), TestingBlock { counter: 0 });
-        block_editor.add_block(Pos2::new(150.0, 150.0), TestingBlock { counter: 0 });
+        block_editor.add_block(
+            Pos2::new(50.0, 50.0),
+            TestingBlock {
+                shape: BlockShape::C {
+                    branches: NonZeroUsize::new(1).unwrap(),
+                },
+            },
+        );
+
+        block_editor.add_block(
+            Pos2::new(150.0, 150.0),
+            TestingBlock {
+                shape: BlockShape::Cap,
+            },
+        );
+
+        block_editor.add_block(
+            Pos2::new(100.0, 100.0),
+            TestingBlock {
+                shape: BlockShape::Hat,
+            },
+        );
 
         Self { block_editor }
     }
@@ -35,9 +56,13 @@ impl eframe::App for Main {
             ui.label("Hello World!");
             egui::widgets::global_dark_light_mode_buttons(ui);
 
-            if ui.button("add").clicked() {
-                self.block_editor
-                    .add_block(Pos2::new(150.0, 150.0), TestingBlock { counter: 0 });
+            if ui.button("stack").clicked() {
+                self.block_editor.add_block(
+                    Pos2::new(150.0, 150.0),
+                    TestingBlock {
+                        shape: BlockShape::Cap,
+                    },
+                );
             }
 
             ui.add(&mut self.block_editor);
@@ -46,15 +71,33 @@ impl eframe::App for Main {
 }
 
 struct TestingBlock {
-    counter: usize,
+    shape: BlockShape,
+}
+
+impl TestingBlock {
+    const STEPS: &'static str = "steps";
+    const TESTING: &'static str = "testing";
 }
 
 impl Block for TestingBlock {
     fn describe(&mut self) -> BlockDescription {
-        self.counter += 1;
         BlockDescription {
-            content: format!("count {} :3", self.counter),
-            shape: BlockShape::Stack,
+            shape: self.shape,
+            content: vec![
+                BlockWidget::Label { text: "move" },
+                BlockWidget::NumberEdit {
+                    key: Self::STEPS,
+                    default: 0,
+                },
+                BlockWidget::Label { text: "steps" },
+                BlockWidget::TextEdit {
+                    key: Self::TESTING,
+                    default: ":3",
+                },
+                BlockWidget::Label { text: "abc" },
+            ],
         }
     }
+
+    fn run(&mut self) {}
 }
