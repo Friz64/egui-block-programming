@@ -84,6 +84,7 @@ pub trait Block {
 enum Next {
     NotApplicable,
     None,
+    Hovering { index: Index },
     Some { index: Index, height: f32 },
 }
 
@@ -321,6 +322,8 @@ impl BlockEditor {
 
 impl Widget for &mut BlockEditor {
     fn ui(self, ui: &mut Ui) -> Response {
+        ui.style_mut().interaction.selectable_labels = false;
+
         let editor_rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(editor_rect, Sense::drag());
         if response.dragged() {
@@ -450,13 +453,21 @@ impl Widget for &mut BlockEditor {
             }
 
             let notch_offset = (NOTCH_BL + NOTCH_BR) / 2.0;
-            let dragging_attachment_position = self.blocks[dragging].position + notch_offset;
+            let dragging_top_attachment = self.blocks[dragging].position
+                + self.blocks[dragging].parts.first().unwrap().top_offset
+                + notch_offset;
+            // let dragging_bottom_attachment = self.blocks[dragging].position
+            //     + self.blocks[dragging].parts.last().unwrap().bottom_offset
+            //     + notch_offset;
 
             // todo: support multiple nexts
             // TODO: add logic for "top" attaching
             // TODO: add logic for "between" attaching
             // TODO: add logic for "bottom of stack" attaching
             // attaches dragging block to other block
+
+            // for (index, block) in &mut self.blocks {}
+
             self.blocks[dragging].snap_target = None;
             if let Some((closest, _distance)) = self
                 .blocks
@@ -467,7 +478,7 @@ impl Widget for &mut BlockEditor {
                         + other_block.parts.last().unwrap().bottom_offset
                         + notch_offset;
 
-                    let dist = dragging_attachment_position.distance(other_attachment_position);
+                    let dist = dragging_top_attachment.distance(other_attachment_position);
                     (index, dist)
                 })
                 .filter(|(_index, distance)| *distance < 30.0)
@@ -507,6 +518,9 @@ impl Widget for &mut BlockEditor {
             self.blocks[next].position = self.blocks[upper].position
                 + self.blocks[upper].parts.last().unwrap().bottom_offset;
         }
+
+        // TODO: recalculate height
+        // TODO: make this conditional?
 
         response
     }

@@ -5,8 +5,6 @@ use eframe::{egui, epaint::Pos2};
 use std::num::NonZeroUsize;
 
 fn main() -> Result<(), eframe::Error> {
-    std::env::set_var("WINIT_UNIX_BACKEND", "x11");
-
     eframe::run_native(
         "My egui App",
         eframe::NativeOptions {
